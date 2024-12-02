@@ -25,7 +25,7 @@ def init_worker():
 
 
 def log_result(result):
-	# 각 워커 프로세스 결과 수집후 global variable result에 속속 추 98.6가
+	# 각 워커 프로세스 결과 수집후 global variable result에 속속 추 98.6
 	global results 
 	results.append(result)
 	
