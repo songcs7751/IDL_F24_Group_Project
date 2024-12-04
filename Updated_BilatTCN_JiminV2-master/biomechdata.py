@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -374,9 +375,7 @@ class BilatTCN(nn.Module):
 	def init_weights(self):
 		self.linear.weight.data.normal_(0, 0.01)
 
-	# def forward(self, x, sequence_lens=[], t=-1):
 	def forward(self, x, sequence_lens=[]):
-
 		x_c = x[:, :,:-self.eff_hist_nc]
 		x_nc = x[:,:, self.eff_hist_c:]
 		x_nc = torch.flip(x_nc, (2,))
@@ -386,7 +385,7 @@ class BilatTCN(nn.Module):
 
 		if any(sequence_lens):
 			y1_c = torch.cat([x_c[i, :, self.eff_hist_c:self.eff_hist_c+sequence_lens[i]].contiguous() for i in range(x_c.shape[0])], dim=1).transpose(0, 1).contiguous()
-			y1_nc = torch.cat([x_nc[i, :, self.eff_hist_nc:self.eff_hist_nc+sequence_lens[i]].contiguous() for i in range(x_nc.shape[0])], dim=1).transpose(0, 1).contiguous()	
+			y1_nc = torch.cat([x_nc[i, :, self.eff_hist_nc:self.eff_hist_nc+sequence_lens[i]].contiguous() for i in range(x_nc.shape[0])], dim=1).transpose(0, 1).contiguous()    
 		else:
 			y1_c = torch.cat([x_c[i, :, self.eff_hist_c:].contiguous() for i in range(x_c.shape[0])], dim=1).transpose(0, 1).contiguous()
 			y1_nc = torch.cat([x_nc[i, :, self.eff_hist_nc:].contiguous() for i in range(x_nc.shape[0])], dim=1).transpose(0, 1).contiguous()
@@ -394,6 +393,154 @@ class BilatTCN(nn.Module):
 		y1 = torch.cat((y1_c, y1_nc), dim = 1).contiguous()
 
 		return self.linear(y1)
+
+class TransformerModel_2(nn.Module):
+	def __init__(self, input_size_c, input_size_nc, output_size, num_channels_c, num_channels_nc, ksize_c, ksize_nc, dropout, eff_hist_c, eff_hist_nc, d_model=128, nhead=2, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512):
+		super(TransformerModel_2, self).__init__()
+		
+		self.pos_encoder = PositionalEncoding(d_model, dropout)
+		self.input_linear_c = nn.Linear(input_size_c, d_model)
+		self.input_linear_nc = nn.Linear(input_size_nc, d_model)
+		
+		encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
+		decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout)
+		
+		self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers)
+		self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_decoder_layers)
+		
+		self.output_linear = nn.Linear(d_model * 2, output_size)  # *2 because we concat causal and non-causal
+		
+		self.d_model = d_model
+		self.eff_hist_c = eff_hist_c
+		self.eff_hist_nc = eff_hist_nc
+		self.init_weights()
+
+	def init_weights(self):
+		initrange = 0.01
+		self.input_linear_c.weight.data.normal_(0, initrange)
+		self.input_linear_nc.weight.data.normal_(0, initrange)
+		self.output_linear.weight.data.normal_(0, initrange)
+
+	def forward(self, x, sequence_lens=[]):
+		# Split into causal and non-causal parts
+		x_c = x[:, :, :-self.eff_hist_nc]
+		x_nc = x[:, :, self.eff_hist_c:]
+		x_nc = torch.flip(x_nc, (2,))
+
+		# Reshape and project inputs
+		x_c = x_c.permute(2, 0, 1)  # (seq_len, batch, features)
+		x_nc = x_nc.permute(2, 0, 1)
+		
+		x_c = self.input_linear_c(x_c)
+		x_nc = self.input_linear_nc(x_nc)
+		
+		# Add positional encoding
+		x_c = x_c * math.sqrt(self.d_model)
+		x_nc = x_nc * math.sqrt(self.d_model)
+		x_c = self.pos_encoder(x_c)
+		x_nc = self.pos_encoder(x_nc)
+
+		# Transform both streams
+		memory_c = self.transformer_encoder(x_c)
+		memory_nc = self.transformer_encoder(x_nc)
+
+		# Handle sequence lengths
+		if any(sequence_lens):
+			y1_c = torch.cat([memory_c[self.eff_hist_c:self.eff_hist_c+sequence_lens[i], i] for i in range(memory_c.size(1))])
+			y1_nc = torch.cat([memory_nc[self.eff_hist_nc:self.eff_hist_nc+sequence_lens[i], i] for i in range(memory_nc.size(1))])
+		else:
+			y1_c = torch.cat([memory_c[self.eff_hist_c:, i] for i in range(memory_c.size(1))])
+			y1_nc = torch.cat([memory_nc[self.eff_hist_nc:, i] for i in range(memory_nc.size(1))])
+
+		# Concatenate causal and non-causal features
+		y1 = torch.cat((y1_c, y1_nc), dim=1).contiguous()
+		
+		# Final projection to output size
+		return self.output_linear(y1)
+	
+class TransformerModel(nn.Module):
+	def __init__(self, input_size_c, output_size, eff_hist_c, eff_hist_nc, d_model=512, nhead=8, num_encoder_layers=3, 
+				 num_decoder_layers=3, dim_feedforward=512, dropout=0.1, **kwargs):
+		super(TransformerModel, self).__init__()
+		
+		self.pos_encoder = PositionalEncoding(d_model, dropout)
+		self.input_linear = nn.Linear(input_size_c, d_model)
+		
+		encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
+		decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout)
+		
+		self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers)
+		self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_decoder_layers)
+		
+		self.output_linear = nn.Linear(d_model, output_size)
+		
+		self.d_model = d_model
+		self.eff_hist_c = eff_hist_c
+		print(eff_hist_c)
+		self.eff_hist_nc = eff_hist_nc
+		print(eff_hist_nc)
+		self.init_weights()
+
+	def init_weights(self):
+		initrange = 0.1
+		self.input_linear.weight.data.uniform_(-initrange, initrange)
+		self.output_linear.weight.data.uniform_(-initrange, initrange)
+
+	def generate_square_subsequent_mask(self, sz):
+		mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+		mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+		return mask
+
+	def forward(self, src, sequence_lens=[]):
+		# src shape: (batch, features, seq_len) -> (seq_len, batch, features)
+		src = src.permute(2, 0, 1)
+		
+		# Linear projection to d_model dimensions 
+		src = self.input_linear(src)
+		
+		# Add positional encoding
+		src = src * math.sqrt(self.d_model)
+		src = self.pos_encoder(src)
+		
+		# Generate target sequence for decoder (initially zeros)
+		tgt = torch.zeros_like(src)
+		tgt = self.pos_encoder(tgt)
+		
+		# Generate mask for decoder
+		tgt_mask = self.generate_square_subsequent_mask(tgt.size(0)).to(src.device)
+		
+		# Encode and decode
+		memory = self.transformer_encoder(src)
+		output = self.transformer_decoder(tgt, memory, tgt_mask=tgt_mask)
+		
+		# Linear projection to output size
+		output = self.output_linear(output)
+		
+		# Handle sequence lengths and effective history if provided
+		if any(sequence_lens):
+			output = torch.cat([output[self.eff_hist_c:self.eff_hist_c+sequence_lens[i], i, :] for i in range(len(sequence_lens))])
+		else:
+			output = output[self.eff_hist_c+self.eff_hist_nc:].permute(1, 0, 2).contiguous()
+			output = output.view(-1, output.size(2))
+			
+		return output
+
+class PositionalEncoding(nn.Module):
+	def __init__(self, d_model, dropout=0.1, max_len=10000):
+		super(PositionalEncoding, self).__init__()
+		self.dropout = nn.Dropout(p=dropout)
+
+		position = torch.arange(max_len).unsqueeze(1)
+		div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+		pe = torch.zeros(max_len, 1, d_model)
+		pe[:, 0, 0::2] = torch.sin(position * div_term)
+		pe[:, 0, 1::2] = torch.cos(position * div_term)
+		self.register_buffer('pe', pe)
+
+	def forward(self, x):
+		x = x + self.pe[:x.size(0)]
+		return self.dropout(x)
+
 '''
 		y1_c = x_c[-1,-1,self.eff_hist_c:]
 		y1_nc = x_nc[-1,-1,-(self.eff_hist_nc+1):]

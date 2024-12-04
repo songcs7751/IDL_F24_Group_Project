@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from biomechdata import AbleBodyDataset2, BilatTCN, LossFunctions, get_model_dict
+from biomechdata import AbleBodyDataset2, TransformerModel_2, BilatTCN, LossFunctions, get_model_dict
 from biomechutils import DeviceManager, get_file_names, update_rel_dir, build_exp, get_exp_name, write_to_file
 import torch
 import torch.nn as nn
@@ -174,7 +174,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		# 이거를 우리가 원하는 대로 바꿔야 할텐데
 		output_size = 1 # Output is joint torque estimation
 		model_dict.update({'input_size_c': input_size_c, 'input_size_nc' : input_size_nc, 'output_size': output_size})
-		net = BilatTCN(**model_dict).to(device)
+		net = TransformerModel_2(**model_dict).to(device)
 		optimizer = getattr(optim, opt)(net.parameters(), lr=lr)
 		loss_function = nn.MSELoss()
 
