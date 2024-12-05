@@ -95,7 +95,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		# Use input_dir as is without changing sub_dir
 		sub_dir = ''
 		# train_dataset = AbleBodyDataset2(input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
-		train_dataset = AbleBodyDataset2(input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
+		train_dataset = AbleBodyDataset2(data_type="train", input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
 		# Set up the training dataset using AbleBodyDataset2 from biomechdata
 		# This line determines which dataset I will use
 		print(f"Train dataset setup: input_dir={input_dir}, label={label}, sensors={sensors}")
@@ -125,7 +125,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 
 		# Set up test dataset and get all trial names
 		# test_dataset = AbleBodyDataset2(input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
-		test_dataset = AbleBodyDataset2(input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
+		test_dataset = AbleBodyDataset2(data_type="test", input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
 
 		# test_dataset.add_trials(sub_dir=os.path.join(test_subject, sub_dir), ext='.csv', include=gait_modes)
 		test_dataset.add_trials(sub_dir=os.path.join(test_subject, sub_dir), ext='.csv')
@@ -174,7 +174,8 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		# 이거를 우리가 원하는 대로 바꿔야 할텐데
 		output_size = 1 # Output is joint torque estimation
 		model_dict.update({'input_size_c': input_size_c, 'input_size_nc' : input_size_nc, 'output_size': output_size})
-		net = TransformerModel_2(**model_dict).to(device)
+		net = BilatTCN(**model_dict).to(device)
+		#net = TransformerModel_2(**model_dict).to(device)
 		optimizer = getattr(optim, opt)(net.parameters(), lr=lr)
 		loss_function = nn.MSELoss()
 
@@ -473,35 +474,36 @@ def main(m_dict, h_dict, enable_cuda = False, max_device_jobs = 1):
 			del exp_conds['levels_c']
 			del exp_conds['levels_nc']
 
-			for s in subjects:
-				run_name = s + '_' + exp_name
-				if run_name + '.csv' in listdir(m_dict['output_dir']):
-					print('Skipping ' + run_name)
-					continue
+			#for s in subjects:
+			s = subjects[0]  # Get first subject only
+			run_name = s + '_' + exp_name
+			if run_name + '.csv' in listdir(m_dict['output_dir']):
+				print('Skipping ' + run_name)
+				continue
 
-				while not dm.device_available():
+			while not dm.device_available():
 #					time.sleep(2)
-					paused_results = results.copy()
-					err = dm.update_devices(paused_results)
-					if not err:
-						print('Return error!')
-						raise
-				m_dict['device_name'] = dm.get_next_device()
+				paused_results = results.copy()
+				err = dm.update_devices(paused_results)
+				if not err:
+					print('Return error!')
+					raise
+			m_dict['device_name'] = dm.get_next_device()
 
 #				time.sleep(1)
 
-				train_subjects = deepcopy(subjects)
-				train_subjects.remove(s) # 이게 subject에서 첫번째 서브젝을 트레이닝 데이터에서 remove시켜버림
+			train_subjects = deepcopy(subjects)
+			train_subjects.remove(s) # 이게 subject에서 첫번째 서브젝을 트레이닝 데이터에서 remove시켜버림
 
-				run_dict = deepcopy(m_dict)
-				run_dict.update(exp_conds)
-				run_dict.update({'output_name': run_name})
-				run_dict.update({'test_subject': s})
-				run_dict.update({'train_subjects': train_subjects})
+			run_dict = deepcopy(m_dict)
+			run_dict.update(exp_conds)
+			run_dict.update({'output_name': run_name})
+			run_dict.update({'test_subject': s})
+			run_dict.update({'train_subjects': train_subjects})
 
-				print("config", run_dict)
+			print("config", run_dict)
 
-				pool.apply_async(train_test_subject_ind, kwds=deepcopy(run_dict), callback=log_result)
+			pool.apply_async(train_test_subject_ind, kwds=deepcopy(run_dict), callback=log_result)
 
 		while dm.get_active_process_count() > 0:
 #			time.sleep(2)

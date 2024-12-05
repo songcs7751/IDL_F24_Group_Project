@@ -10,9 +10,11 @@ import numpy as np
 import time
 from matplotlib import pyplot as plt
 from biomechutils import get_file_names
+import tsaug
 
 class AbleBodyDataset2(Dataset):
-	def __init__(self, input_dir, label, ft_use=[], ft_ignore=[], trials_use=[], trials_ignore=[]):
+	def __init__(self, data_type, input_dir, label, ft_use=[], ft_ignore=[], trials_use=[], trials_ignore=[]):
+		self.data_type = data_type # to distinguish between training and testing data
 		self.input_dir = input_dir
 		self.label = label
 		self.ft_use = ft_use
@@ -20,6 +22,7 @@ class AbleBodyDataset2(Dataset):
 		self.trials_use = trials_use
 		self.trials_ignore = trials_ignore
 		self.trial_names = []
+		self.idx = 0
 		print('Initializing AbleBodyDataset2')
 		print(f"Input directory: {self.input_dir}")
 		print(f"Label: {self.label}")
@@ -27,7 +30,6 @@ class AbleBodyDataset2(Dataset):
 		print(f"Features to ignore: {self.ft_ignore}")
 		print(f"Trials to use: {self.trials_use}")
 		print(f"Trials to ignore: {self.trials_ignore}")
-
 
 	def __len__(self):
 		return len(self.trial_names)
@@ -46,11 +48,52 @@ class AbleBodyDataset2(Dataset):
 		input_data = [self.read_tensor(self.input_dir + '/' + name) for name in trial_names] # 이건 맞으니까 건들 ㄴㄴ
 		# print(f"input_data: {type(input_data), type(input_data[0])}")
 		# ProcessedData 후에 \ 더하고 AB01, AB02 박는 역할
+
 		label_data = tuple([data[1] for data in input_data])
 		label_data = torch.cat(label_data, dim=0)
 		# print(f"label_data: {label_data.shape}")
 		feature_data = tuple([data[0] for data in input_data])
 		feature_data = torch.cat(feature_data, dim=0)
+		
+		if self.data_type == 'train':
+			# Normalize feature data using min-max scaling
+			feature_data_min = torch.min(feature_data, dim=0)[0]
+			feature_data_max = torch.max(feature_data, dim=0)[0]
+			feature_data = (feature_data - torch.mean(feature_data, dim=0)) / (torch.std(feature_data, dim=0) + 1e-8)
+
+			feature_data_aug = feature_data.clone()
+			for i in range(feature_data.shape[1]):
+				# Convert to numpy and ensure correct shape (T,) where T is time steps
+				numpy_data = feature_data[:, i].detach().cpu().numpy().astype('float64')
+				# Apply augmentation
+				
+				# Add Noise
+				augmented_data = numpy_data
+
+				# augmented_data = tsaug.AddNoise(scale=0.01).augment(numpy_data)
+				# augmented_data = tsaug.Convolve(window="flattop", size = 10).augment(numpy_data)
+				# augmented_data = tsaug.Dropout(p=0.1, size = [25]).augment(numpy_data)
+				# augmented_data = tsaug.Pool(size=2).augment(numpy_data)
+				# augmented_data = tsaug.Quantize(n_levels=10).augment(numpy_data)
+
+				# Convert back to torch tensor
+				feature_data_aug[:, i] = torch.from_numpy(augmented_data.astype('float32'))
+				# torch.clamp(feature_data_aug, -30, 30)
+
+			if self.data_type == 'train' and self.idx == 0:
+				# Plot augmented time-series data
+				plt.figure(figsize=(8, 5))
+				for i in range(feature_data_aug.shape[1]):
+					plt.plot(feature_data_aug[:, i], label=f'Feature {i}', linewidth=1)
+				plt.xlabel('Time Steps')
+				plt.ylabel('Feature Values')
+				plt.ylim(-30, 30)
+				# plt.title('Augmented Time Series Feature Data')
+				# plt.legend()
+				plt.savefig('/home/metamobility/Changseob/IDL/Group_Project/Updated_BilatTCN_JiminV2-master/Updated_BilatTCN_JiminV2-master/input_data_fig/feature_data_aug_plot.png')
+				plt.close()
+				self.idx += 1
+
 		# print("feature_data: ", feature_data.shape)
 
 		return {'features': feature_data, 'labels': label_data}
@@ -105,15 +148,15 @@ class AbleBodyDataset2(Dataset):
 			# label_start = how many data points exist before the first label for this step data.
 			# eff_hist = the number of data points required as input to the TCN for the first label
 			# eff_pred = the number of data points between the last input and first label for the TCN (prediction)
-		if eff_hist+eff_pred > label_start:
-			print(f'Warning - Starting later than padded input data. Removing {(eff_hist+eff_pred)-label_start} labels from start of {trial}.')
+		# if eff_hist+eff_pred > label_start:
+			# print(f'Warning - Starting later than padded input data. Removing {(eff_hist+eff_pred)-label_start} labels from start of {trial}.')
 		label_start = max(eff_hist+eff_pred, label_start)
 		feat_start = label_start-(eff_hist+eff_pred)
 
 		# Similar check as before but now we only need to make sure there is enough room for any prediction
 			# Technically this only matters for negative prediction values (estimating back in time from the input data)
-		if label_end > data['labels'].shape[0] + eff_pred - 1:
-			print(f"Warning - Ending earlier than padded input data. Removing {(data['labels'].shape[0] + eff_pred - 1)-label_end} labels from end of {trial}.")
+		# if label_end > data['labels'].shape[0] + eff_pred - 1:
+			# print(f"Warning - Ending earlier than padded input data. Removing {(data['labels'].shape[0] + eff_pred - 1)-label_end} labels from end of {trial}.")
 		label_end = min(data['labels'].shape[0]+eff_pred-1, label_end)
 		feat_end = label_end-eff_pred
 
@@ -251,7 +294,7 @@ class AbleBodyDataset2(Dataset):
 		
 		if torch.isnan(input_data).any():
 			percent_nan = torch.isnan(input_data).sum().item() / input_data.numel()
-			print('Warning - {} NaN in input '.format(percent_nan) + file_path)
+			# print('Warning - {} NaN in input '.format(percent_nan) + file_path)
 		
 		return input_data, label_data
 
