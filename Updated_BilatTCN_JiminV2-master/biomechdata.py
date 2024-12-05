@@ -395,20 +395,17 @@ class BilatTCN(nn.Module):
 		return self.linear(y1)
 
 class TransformerModel_2(nn.Module):
-	def __init__(self, input_size_c, input_size_nc, output_size, num_channels_c, num_channels_nc, ksize_c, ksize_nc, dropout, eff_hist_c, eff_hist_nc, d_model=128, nhead=2, num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=512):
+	def __init__(self, input_size_c, input_size_nc, output_size, num_channels_c, num_channels_nc, ksize_c, ksize_nc, dropout, eff_hist_c, eff_hist_nc, d_model=32, nhead=2, num_decoder_layers=2, dim_feedforward=128):
 		super(TransformerModel_2, self).__init__()
 		
 		self.pos_encoder = PositionalEncoding(d_model, dropout)
 		self.input_linear_c = nn.Linear(input_size_c, d_model)
 		self.input_linear_nc = nn.Linear(input_size_nc, d_model)
 		
-		encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
 		decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout)
-		
-		self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers)
 		self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_decoder_layers)
 		
-		self.output_linear = nn.Linear(d_model * 2, output_size)  # *2 because we concat causal and non-causal
+		self.output_linear = nn.Linear(d_model, output_size)  # *2 because we concat causal and non-causal
 		
 		self.d_model = d_model
 		self.eff_hist_c = eff_hist_c
@@ -421,42 +418,50 @@ class TransformerModel_2(nn.Module):
 		self.input_linear_nc.weight.data.normal_(0, initrange)
 		self.output_linear.weight.data.normal_(0, initrange)
 
+	def generate_square_subsequent_mask(self, sz):
+		mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+		mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+		return mask
+
 	def forward(self, x, sequence_lens=[]):
 		# Split into causal and non-causal parts
 		x_c = x[:, :, :-self.eff_hist_nc]
-		x_nc = x[:, :, self.eff_hist_c:]
-		x_nc = torch.flip(x_nc, (2,))
+		# x_nc = x[:, :, self.eff_hist_c:]
+		# x_nc = torch.flip(x_nc, (2,))
 
 		# Reshape and project inputs
 		x_c = x_c.permute(2, 0, 1)  # (seq_len, batch, features)
-		x_nc = x_nc.permute(2, 0, 1)
+		# x_nc = x_nc.permute(2, 0, 1)
 		
 		x_c = self.input_linear_c(x_c)
-		x_nc = self.input_linear_nc(x_nc)
+		# x_nc = self.input_linear_nc(x_nc)
 		
 		# Add positional encoding
 		x_c = x_c * math.sqrt(self.d_model)
-		x_nc = x_nc * math.sqrt(self.d_model)
+		# x_nc = x_nc * math.sqrt(self.d_model)
 		x_c = self.pos_encoder(x_c)
-		x_nc = self.pos_encoder(x_nc)
+		# x_nc = self.pos_encoder(x_nc)
 
-		# Transform both streams
-		memory_c = self.transformer_encoder(x_c)
-		memory_nc = self.transformer_encoder(x_nc)
+		# Generate target mask
+		tgt_mask = self.generate_square_subsequent_mask(x_c.size(0)).to(x_c.device)
+		
+		# Decode both streams
+		out_c = self.transformer_decoder(x_c, x_c, tgt_mask=tgt_mask)
+		# out_nc = self.transformer_decoder(x_nc, x_nc, tgt_mask=tgt_mask)
 
 		# Handle sequence lengths
 		if any(sequence_lens):
-			y1_c = torch.cat([memory_c[self.eff_hist_c:self.eff_hist_c+sequence_lens[i], i] for i in range(memory_c.size(1))])
-			y1_nc = torch.cat([memory_nc[self.eff_hist_nc:self.eff_hist_nc+sequence_lens[i], i] for i in range(memory_nc.size(1))])
+			y1_c = torch.cat([out_c[self.eff_hist_c:self.eff_hist_c+sequence_lens[i], i] for i in range(out_c.size(1))])
+			# y1_nc = torch.cat([out_nc[self.eff_hist_nc:self.eff_hist_nc+sequence_lens[i], i] for i in range(out_nc.size(1))])
 		else:
-			y1_c = torch.cat([memory_c[self.eff_hist_c:, i] for i in range(memory_c.size(1))])
-			y1_nc = torch.cat([memory_nc[self.eff_hist_nc:, i] for i in range(memory_nc.size(1))])
+			y1_c = torch.cat([out_c[self.eff_hist_c:, i] for i in range(out_c.size(1))])
+			# y1_nc = torch.cat([out_nc[self.eff_hist_nc:, i] for i in range(out_nc.size(1))])
 
 		# Concatenate causal and non-causal features
-		y1 = torch.cat((y1_c, y1_nc), dim=1).contiguous()
+		# y1 = torch.cat((y1_c, y1_nc), dim=1).contiguous()
 		
 		# Final projection to output size
-		return self.output_linear(y1)
+		return self.output_linear(y1_c)
 	
 class TransformerModel(nn.Module):
 	def __init__(self, input_size_c, output_size, eff_hist_c, eff_hist_nc, d_model=512, nhead=8, num_encoder_layers=3, 
@@ -526,7 +531,7 @@ class TransformerModel(nn.Module):
 		return output
 
 class PositionalEncoding(nn.Module):
-	def __init__(self, d_model, dropout=0.1, max_len=10000):
+	def __init__(self, d_model, dropout=0, max_len=20000):
 		super(PositionalEncoding, self).__init__()
 		self.dropout = nn.Dropout(p=dropout)
 

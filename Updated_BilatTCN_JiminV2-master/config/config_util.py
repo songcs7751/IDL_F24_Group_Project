@@ -7,8 +7,8 @@ import os
 
 @dataclass
 class Config():
-	input_dir = os.path.abspath(r"/home/metamobility/Changseob/IDL/Group_Project/Dataset")
-	output_dir = os.path.abspath(r"/home/metamobility/Changseob/IDL/Group_Project/Output")
+	input_dir = os.path.abspath(r"/workspace/Dataset")
+	output_dir = os.path.abspath(r"/workspace/Output")
     # 나머지 설정은 그대로 유지
 #class Config():
 	# Directories and Write Flags
@@ -31,6 +31,7 @@ class Config():
 	# Subjects
 	# subjects = ['AB01', 'AB02', 'AB03', 'AB05', 'AB06', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13']
 	subjects = ['AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17', 'AB18', 'AB19', 'AB20']
+	# 'AB11', 'AB12', 'AB13', 'AB14', 'AB15', 
 
 	# Input sensors
 	# sensors = ['hip_sagittal', 'd_hip_sagittal_lpf', 'thigh_accel', 'thigh_gyro', 'pelvis_accel', 'pelvis_gyro']
@@ -53,7 +54,7 @@ class Config():
 	num_epochs = 50
 	min_epochs = 100
 	steps_per_batch = 256
-	batch_size_per_step = 32
+	batch_size_per_step = 1024
 	early_stopping = True
 	patience = 50 # Only used if early_stopping = True
 	batch_pad_value = -500
