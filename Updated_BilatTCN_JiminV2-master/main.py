@@ -17,6 +17,7 @@ from copy import deepcopy
 from config.config_util import load_config_file
 import csv
 import os
+trial_name = "ensemble_test"
 
 def init_worker():
 	# Ignore normal keyboard interrupt exit to properly close multiprocessing workers 
@@ -174,8 +175,12 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		# 이거를 우리가 원하는 대로 바꿔야 할텐데
 		output_size = 1 # Output is joint torque estimation
 		model_dict.update({'input_size_c': input_size_c, 'input_size_nc' : input_size_nc, 'output_size': output_size})
-		net = TransformerModel_2(**model_dict).to(device)
-		optimizer = getattr(optim, opt)(net.parameters(), lr=lr)
+		# ensemble
+		net1 = TransformerModel_2(**model_dict).to(device)
+		net2 = BilatTCN(**model_dict).to(device)
+		optimizer1 = getattr(optim, opt)(net1.parameters(), lr=lr)
+		optimizer2 = getattr(optim, opt)(net2.parameters(), lr=lr)
+		# optimizer = getattr(optim, opt)(net.parameters(), lr=lr)
 		loss_function = nn.MSELoss()
 
 		# Train Model
@@ -215,7 +220,9 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 			train_loss = 0.0 # Variable to compute the train loss per epoch
 			train_mse = 0.0 # Variable to compute the train mse per epoch
 
-			net.train(True) # This enables gradient tracking and training parameters (e.g. dropout)
+			# net.train(True) # This enables gradient tracking and training parameters (e.g. dropout)
+			net1.train(True)  # Enable training mode for Transformer
+			net2.train(True)  # Enable training mode for TCN
 			sequence_lens = []
 			
 
@@ -257,31 +264,26 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 					# Concatenate training data into required tensors
 					x_train = torch.cat(x_train, dim=0) # shape = (num_steps, num_features, num_points)
 					y_train = torch.cat(y_train, dim=0) # shape = (num_steps*num_points, 1)
-					# if len(train_trial_list) - i  < 10:
-					# 	print(x_train.shape, x_train)
-					# Clear gradients store in optimizer and complete forward pass
-					optimizer.zero_grad()
-					y_out = net(x_train, sequence_lens)
-					#
-					# y_out torch.Size([2003, 1])
-					# x_train torch.Size([64, 22, 404])
-					# y_train torch.Size([2005, 1])
-					# print("x_train", x_train.shape)
-					# print("y_train", y_train.shape)
-					# print("sequence_lens", len(sequence_lens))
-					# print("y_out", y_out.shape)
-     
-					# print("x_train", np.isnan(x_train.cpu().detach().numpy()).any())
-					# print("sequence_lens", np.isnan(np.ndarray(sequence_lens)).any(), sequence_lens[:10], np.ndarray(sequence_lens))
-					# print("y_out", np.isnan(y_out.cpu().detach().numpy()).any())
 
-					# Backpropagation
-					loss = loss_function.forward(y_out, y_train) # Compute loss
-					loss.backward() # Compute gradient
-					optimizer.step() # Update model weights
+					# Train first model (Transformer)
+					net1.train(True)
+					y_out1 = net1(x_train, sequence_lens)
+					loss1 = loss_function.forward(y_out1, y_train)
+					optimizer1.zero_grad()
+					loss1.backward()
+					optimizer1.step()
 
-					# Track training loss
-					train_loss += loss.item()
+					# Train second model (BilatTCN)
+					net2.train(True)
+					y_out2 = net2(x_train, sequence_lens)
+					loss2 = loss_function.forward(y_out2, y_train)
+					optimizer2.zero_grad()
+					loss2.backward()
+					optimizer2.step()
+
+					# Combine losses
+					batch_loss = (loss1.item() + loss2.item()) / 2
+					train_loss += batch_loss
 					batch_count += 1
 
 					# Reset training data containers/variables for next mini-batch
@@ -290,12 +292,13 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 					step_count = 0
 					sequence_lens = []
 
-			# Compute the training loss after each epoch
+			# Compute the training loss after each epoch 
 			train_loss /= batch_count
 			train_loss_arr.append(train_loss)
 
 			# Compute the validation loss after each epoch
-			net.train(False) # Disable gradient tracking and training parameter
+			net1.train(False) # Disable gradient tracking for transformer
+			net2.train(False) # Disable gradient tracking for BilatTCN
      
 			
 			
@@ -308,24 +311,20 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 			# print("sequence_lens_test:", len(sequence_lens_test))
 			val_loss = 0
 			with torch.no_grad():
-				for i,x_test_trial in enumerate(x_test):
+				for i, x_test_trial in enumerate(x_test):
 					x_test_trial = x_test_trial.unsqueeze(0).transpose(1, 2).contiguous()
-					# print("x_test_trial shape:", x_test_trial.shape)
 					
-					# print("y_test shape:", y_test[i].shape)
-						
-					y_out = net(x_test_trial)
-					# print("y_out shape:", y_out.shape)
+					# Get predictions from both models
+					y_out1 = net1(x_test_trial)
+					y_out2 = net2(x_test_trial)
+					
+					# Ensemble the predictions (simple average) 
+					y_out = (y_out1 + y_out2) / 2
+					
 					loss = loss_function.forward(y_out, y_test[i])
-					# print("val_loss:", val_loss, loss.item())
 					val_loss += loss.item()
-     
+
 				val_loss /= len(x_test)
-					
-     
-				# y_out = net(x_test, sequence_lens_test)
-				# print("y_out shape:", y_out.shape)
-				# val_loss = loss_function.forward(y_out, y_test)
 				val_loss_arr.append(val_loss)
 
 			# Track best validation loss for early stopping
@@ -335,14 +334,15 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 				patience_count = 0
 				best_y_out = y_out # Saving best validation estimate
 				if save_model:
-					model_dict['state_dict'] = deepcopy(net.state_dict())
+					model_dict['state_dict_transformer'] = deepcopy(net1.state_dict())
+					model_dict['state_dict_tcn'] = deepcopy(net2.state_dict())
 			else:
 				patience_count += 1
 
 			print(f"{test_subject} Epoch {epoch}: Train Loss {round(train_loss, 4)}, Val Loss {round(val_loss, 4)}, Patience {patience_count}/{patience}, {round(time.time()-start_time, 1)} seconds")
 			
 			# Save validation loss for the current epoch
-			csv_file_path = "training_result.csv"
+			csv_file_path = f"[{trial_name}]training_result.csv"
 
 			# Check if the file exists to determine if we need to write the header
 			file_exists = os.path.isfile(csv_file_path)
