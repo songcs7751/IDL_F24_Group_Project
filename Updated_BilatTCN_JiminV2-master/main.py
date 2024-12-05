@@ -17,7 +17,7 @@ from copy import deepcopy
 from config.config_util import load_config_file
 import csv
 import os
-trial_name = "ensemble_test"
+trial_name = "[Dynamic_Weighting_Based_on_Loss]"
 
 def init_worker():
 	# Ignore normal keyboard interrupt exit to properly close multiprocessing workers 
@@ -51,6 +51,13 @@ def pad_data(data, des_length, pad_value, dim=0):
 		return data 
 	return data_padded, time.time()-start_time # 패딩된 데이터와 패딩에 소요된 시간 반환
 
+def get_dynamic_weights(loss1, loss2):
+    inv_loss1 = 1 / (loss1 + 1e-10)  # Avoid division by zero
+    inv_loss2 = 1 / (loss2 + 1e-10)
+    total = inv_loss1 + inv_loss2
+    w1 = inv_loss1 / total
+    w2 = inv_loss2 / total
+    return w1, w2
 
 def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, sensors, sensors_ignore, device_name, 
 	batch_size_per_step, steps_per_batch, num_epochs, min_epochs, batch_pad_value, early_stopping, patience, 
@@ -281,8 +288,14 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 					loss2.backward()
 					optimizer2.step()
 
-					# Combine losses
-					batch_loss = (loss1.item() + loss2.item()) / 2
+					# Calculate dynamic weights based on losses
+					w1, w2 = get_dynamic_weights(loss1.item(), loss2.item())
+					
+					# Combine predictions using dynamic weights
+					y_out_combined = w1 * y_out1 + w2 * y_out2
+					
+					# Calculate combined loss
+					batch_loss = loss_function.forward(y_out_combined, y_train).item()
 					train_loss += batch_loss
 					batch_count += 1
 
@@ -317,9 +330,13 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 					# Get predictions from both models
 					y_out1 = net1(x_test_trial)
 					y_out2 = net2(x_test_trial)
+
+					val_loss1 = loss_function.forward(y_out1, y_test[i])
+					val_loss2 = loss_function.forward(y_out2, y_test[i])
 					
-					# Ensemble the predictions (simple average) 
-					y_out = (y_out1 + y_out2) / 2
+					# Get dynamic weights based on training performance
+					w1, w2 = get_dynamic_weights(val_loss1.item(), val_loss2.item())
+					y_out = w1 * y_out1 + w2 * y_out2
 					
 					loss = loss_function.forward(y_out, y_test[i])
 					val_loss += loss.item()
@@ -342,7 +359,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 			print(f"{test_subject} Epoch {epoch}: Train Loss {round(train_loss, 4)}, Val Loss {round(val_loss, 4)}, Patience {patience_count}/{patience}, {round(time.time()-start_time, 1)} seconds")
 			
 			# Save validation loss for the current epoch
-			csv_file_path = f"[{trial_name}]training_result.csv"
+			csv_file_path = f"{trial_name}training_result.csv"
 
 			# Check if the file exists to determine if we need to write the header
 			file_exists = os.path.isfile(csv_file_path)
