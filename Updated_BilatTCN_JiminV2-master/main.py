@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from biomechdata import AbleBodyDataset2, TransformerModel_2, BilatTCN, LossFunctions, get_model_dict
+from biomechdata import AbleBodyDataset2, TransformerModel_2, TCN, BilatTCN, LossFunctions, get_model_dict
 from biomechutils import DeviceManager, get_file_names, update_rel_dir, build_exp, get_exp_name, write_to_file
 import torch
 import torch.nn as nn
@@ -17,6 +17,20 @@ from copy import deepcopy
 from config.config_util import load_config_file
 import csv
 import os
+from tsaug import TimeWarp, Crop, Quantize, Drift, Reverse, AddNoise, Convolve
+
+
+def getAugmenter(add_noise_scale, convolve_window, convolve_size, max_speed_ratio, quantize):
+		my_augmenter = AddNoise(scale=add_noise_scale)
+		if (convolve_size > 0):
+			my_augmenter += Convolve(window=convolve_window, size=convolve_size)
+		if (max_speed_ratio > 0):
+			my_augmenter += TimeWarp(max_speed_ratio=max_speed_ratio)
+		if (quantize == True):
+			my_augmenter += Quantize(n_levels=[10, 20, 30, 40, 50])
+
+		return my_augmenter
+
 
 def init_worker():
 	# Ignore normal keyboard interrupt exit to properly close multiprocessing workers 
@@ -52,8 +66,8 @@ def pad_data(data, des_length, pad_value, dim=0):
 
 
 def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, sensors, sensors_ignore, device_name, 
-	batch_size_per_step, steps_per_batch, num_epochs, min_epochs, batch_pad_value, early_stopping, patience, 
-	model_dict, label, loss, opt, lr, pred, eff_hist_limit, trials_use, trials_ignore, write_output, save_model, 
+	batch_size_per_step, steps_per_batch, num_epochs, min_epochs, batch_pad_value, augmentation, early_stopping, patience, 
+	model_dict, label, loss, opt, lr, pred, eff_hist_limit, trials_use, trials_ignore, write_output, save_model, standardize, weight_decay, run_name,
 	output_dir='', output_name=''):
 		
 	try:
@@ -71,6 +85,9 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 			return -1
 		# "Check device, test subject, training subjects, and label. If any of them are empty, return -1 and exit the function."
 
+		print('eff_hist_c:', model_dict['eff_hist_c'])
+		print('eff_hist_nc:', model_dict['eff_hist_nc'])
+		print('eff_hist', model_dict['eff_hist_c'] + model_dict['eff_hist_nc'])
 		if model_dict['eff_hist_c'] > eff_hist_limit:
 			print('Effective causal history too long.')
 		if model_dict['eff_hist_nc'] > eff_hist_limit:
@@ -95,7 +112,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		# Use input_dir as is without changing sub_dir
 		sub_dir = ''
 		# train_dataset = AbleBodyDataset2(input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
-		train_dataset = AbleBodyDataset2(input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
+		train_dataset = AbleBodyDataset2(input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore, standardize=standardize)
 		# Set up the training dataset using AbleBodyDataset2 from biomechdata
 		# This line determines which dataset I will use
 		print(f"Train dataset setup: input_dir={input_dir}, label={label}, sensors={sensors}")
@@ -125,7 +142,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 
 		# Set up test dataset and get all trial names
 		# test_dataset = AbleBodyDataset2(input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
-		test_dataset = AbleBodyDataset2(input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore)
+		test_dataset = AbleBodyDataset2(input_dir=input_dir, label=label, ft_use=sensors, ft_ignore=sensors_ignore, trials_use=trials_use, trials_ignore=trials_ignore, standardize=standardize)
 
 		# test_dataset.add_trials(sub_dir=os.path.join(test_subject, sub_dir), ext='.csv', include=gait_modes)
 		test_dataset.add_trials(sub_dir=os.path.join(test_subject, sub_dir), ext='.csv')
@@ -173,9 +190,10 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		input_size = 22
 		# 이거를 우리가 원하는 대로 바꿔야 할텐데
 		output_size = 1 # Output is joint torque estimation
-		model_dict.update({'input_size_c': input_size_c, 'input_size_nc' : input_size_nc, 'output_size': output_size})
-		net = TransformerModel_2(**model_dict).to(device)
-		optimizer = getattr(optim, opt)(net.parameters(), lr=lr)
+		model_dict.update({'input_size_c': input_size_c, 'input_size_nc' : input_size_nc, 'output_size': output_size, 'input_size': input_size, 'num_channels': model_dict['num_channels_c'], 'ksize': model_dict['ksize_c'], 'eff_hist': model_dict['eff_hist_c']})
+		print('model dict', model_dict)
+		net = TCN(**model_dict).to(device)
+		optimizer = getattr(optim, opt)(net.parameters(), lr=lr, weight_decay=weight_decay)
 		loss_function = nn.MSELoss()
 
 		# Train Model
@@ -197,6 +215,9 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 		# x_test = x_test.transpose(0, 1).view(1, input_size, -1).contiguous()
 
 		# Iterate through all epochs unless early stopping criteria is met
+		augmenter = getAugmenter(add_noise_scale=0.01, convolve_window="flattop", convolve_size=10, max_speed_ratio=0, quantize=True)
+		if augmentation:
+			print("Augmentation enabled")
 		for epoch in range(1, num_epochs+1):
 			print(f"{test_subject} Epoch {epoch}")
 
@@ -205,7 +226,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 
 			# Randomize the training trial list
 			np.random.shuffle(train_trial_list)
-			print(train_trial_list[0])
+			print(train_trial_list[0], len(train_trial_list))
 
 			x_train = [] # Container for mini-batch input data
 			y_train = [] # Container for mini-batch label data
@@ -237,7 +258,13 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 				x_end = y_end + eff_hist
 
 				# Get slice data and transpose input data for conv
-				x_data = train_dict[trial]['data'][x_start:x_end, :].transpose(0, 1)
+				if augmentation:
+					numpy_data = train_dict[trial]['data'][x_start:x_end, :].detach().cpu().numpy().astype('float64')
+				# print('augment this:', numpy_data)
+					x_data = torch.FloatTensor(augmenter.augment(numpy_data)).transpose(0, 1).to(device)
+				else: 
+					x_data = train_dict[trial]['data'][x_start:x_end, :].transpose(0, 1)
+
 				y_data = train_dict[trial]['labels'][y_start:y_end]
 
 				# print('y_data', y_data.shape)
@@ -276,6 +303,9 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 					# print("y_out", np.isnan(y_out.cpu().detach().numpy()).any())
 
 					# Backpropagation
+					# print('x_train', x_train.shape)
+					# print("y_train shape:", y_train.shape)
+					# print("y_out shape:", y_out.shape)
 					loss = loss_function.forward(y_out, y_train) # Compute loss
 					loss.backward() # Compute gradient
 					optimizer.step() # Update model weights
@@ -342,7 +372,7 @@ def train_test_subject_ind(input_dir, test_subject, train_subjects, gait_modes, 
 			print(f"{test_subject} Epoch {epoch}: Train Loss {round(train_loss, 4)}, Val Loss {round(val_loss, 4)}, Patience {patience_count}/{patience}, {round(time.time()-start_time, 1)} seconds")
 			
 			# Save validation loss for the current epoch
-			csv_file_path = "training_result.csv"
+			csv_file_path = run_name + '.csv'
 
 			# Check if the file exists to determine if we need to write the header
 			file_exists = os.path.isfile(csv_file_path)

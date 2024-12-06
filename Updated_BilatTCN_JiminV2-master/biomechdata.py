@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from biomechutils import get_file_names
 
 class AbleBodyDataset2(Dataset):
-	def __init__(self, input_dir, label, ft_use=[], ft_ignore=[], trials_use=[], trials_ignore=[]):
+	def __init__(self, input_dir, label, ft_use=[], ft_ignore=[], trials_use=[], trials_ignore=[], standardize=False):
 		self.input_dir = input_dir
 		self.label = label
 		self.ft_use = ft_use
@@ -20,6 +20,7 @@ class AbleBodyDataset2(Dataset):
 		self.trials_use = trials_use
 		self.trials_ignore = trials_ignore
 		self.trial_names = []
+		self.standardize = standardize
 		print('Initializing AbleBodyDataset2')
 		print(f"Input directory: {self.input_dir}")
 		print(f"Label: {self.label}")
@@ -27,6 +28,7 @@ class AbleBodyDataset2(Dataset):
 		print(f"Features to ignore: {self.ft_ignore}")
 		print(f"Trials to use: {self.trials_use}")
 		print(f"Trials to ignore: {self.trials_ignore}")
+		print(f"Standardize: {self.standardize}")
 
 
 	def __len__(self):
@@ -222,6 +224,11 @@ class AbleBodyDataset2(Dataset):
 		df.ffill(inplace=True)
 		df.fillna(0, inplace=True)
 
+		if self.standardize:
+			normalized_df=(df-df.mean())/df.std()
+		else:
+			normalized_df = df
+
 		# print(f"Initial DataFrame shape: {df.shape}")
 		
 		# Select specified features
@@ -244,7 +251,7 @@ class AbleBodyDataset2(Dataset):
 			print(f"Missing features in input data: {', '.join(missing_ft)}")
 
     	# Convert data to pytorch tensor
-		input_data = torch.tensor(df[features_use].values)
+		input_data = torch.tensor(normalized_df[features_use].values)
 		label_data = torch.tensor(df[self.label].values).unsqueeze(1)
 		# print(f"Input tensor shape: {input_data.shape}")
 		# print(f"Label tensor shape: {label_data.shape}")
@@ -336,7 +343,7 @@ class TemporalConvNet(nn.Module):
 
 
 class TCN(nn.Module):
-	def __init__(self, input_size, output_size, num_channels, ksize, dropout, eff_hist):
+	def __init__(self, input_size, output_size, num_channels, ksize, dropout, eff_hist, **kwargs):
 		super(TCN, self).__init__()
 		self.tcn = TemporalConvNet(input_size, num_channels, kernel_size=ksize, dropout=dropout)
 		self.linear = nn.Linear(num_channels[-1], output_size)
@@ -349,15 +356,22 @@ class TCN(nn.Module):
 	# def forward(self, x, sequence_lens=[], t=-1):
 	def forward(self, x, sequence_lens=[]):
 		# print(x.shape)
+		x = x[:, :,:-self.eff_hist]
+		# print('input x', x.shape)
+		# print('sequence_lens', sequence_lens)
 		y1 = self.tcn(x)
 		# start_time = time.time()
+		# print('output y1', y1.shape)
 
 		if any(sequence_lens):
 			y1 = torch.cat([y1[i, :, self.eff_hist:self.eff_hist+sequence_lens[i]].contiguous() for i in range(y1.shape[0])], dim=1).transpose(0, 1).contiguous()	
 		else:
 			y1 = torch.cat([y1[i, :, self.eff_hist:].contiguous() for i in range(y1.shape[0])], dim=1).transpose(0, 1).contiguous()
 		
-		return self.linear(y1)
+		# print('y1 with eff_hist', y1.shape)
+		out = self.linear(y1)
+		# print('output out', out.shape)
+		return out
 
 
 class BilatTCN(nn.Module):

@@ -7,8 +7,9 @@ import os
 
 @dataclass
 class Config():
-	input_dir = os.path.abspath(r"/home/metamobility/Changseob/IDL/Group_Project/Dataset")
-	output_dir = os.path.abspath(r"/home/metamobility/Changseob/IDL/Group_Project/Output")
+	run_name = 'baseline'
+	input_dir = os.path.abspath(r"/root/IDL_F24_Group_Project/Updated_BilatTCN_JiminV2-master/doi_10_5061_dryad_8kprr4xsv__v20240321")
+	output_dir = os.path.abspath(r"/root/IDL_F24_Group_Project/Updated_BilatTCN_JiminV2-master/output")
     # 나머지 설정은 그대로 유지
 #class Config():
 	# Directories and Write Flags
@@ -16,7 +17,7 @@ class Config():
 ##	output_dir = r"Users/wlals/Downloads" # Estimated hip moment output 파일 디렉토리
     
 	write_output = True
-	save_model = True
+	save_model = False
 
 	# Gait Modes and Trial Types
 	gait_modes = ['LG']
@@ -30,7 +31,8 @@ class Config():
 
 	# Subjects
 	# subjects = ['AB01', 'AB02', 'AB03', 'AB05', 'AB06', 'AB08', 'AB09', 'AB10', 'AB11', 'AB12', 'AB13']
-	subjects = ['AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17', 'AB18', 'AB19', 'AB20']
+	subjects = ['AB11', 'AB12', 'AB13', 'AB14', 'AB15', 'AB16', 'AB17', 'AB18', 'AB19', 'AB20'] 
+	# subjects = ['AB11', 'AB12']
 
 	# Input sensors
 	# sensors = ['hip_sagittal', 'd_hip_sagittal_lpf', 'thigh_accel', 'thigh_gyro', 'pelvis_accel', 'pelvis_gyro']
@@ -50,24 +52,45 @@ class Config():
 	# 이 부분 내가 지우고 알아서 데이터 column 이름으로 만들면 될듯
 
 	# Network Training/Testing Parameters
+	# augmentation = False
+	# standardize = False
+	# weight_decay = 0 # This is only used if opt = 'AdamW', 0.1
 	num_epochs = 50
-	min_epochs = 100
-	steps_per_batch = 256
-	batch_size_per_step = 32
+	min_epochs = 10
+	steps_per_batch = 512
+	batch_size_per_step = 512
 	early_stopping = True
-	patience = 50 # Only used if early_stopping = True
-	batch_pad_value = -500
+	patience = 5 # Only used if early_stopping = True
+
 
 	# Network Hyperparameters
 	ksize = [4]
 	hsize = [50]
-	levels = [5]
 	loss = ['MSELoss'] # Current options are 'MSELoss' and 'SmoothL1Loss'
-	opt = ['Adam']
 	dropout  = [0.3]
 	lr = [0.0005]
 	pred = [0]
-	eff_hist_limit = 200 # This is based on the padding set when extracting step data
+	eff_hist_limit = 400 # This is based on the padding set when extracting step data
+
+	# Original Settings
+	# levels = [5]
+	# opt = ['Adam']
+	# eff_hist_limit = 200 # This is based on the padding set when extracting step data
+	# steps_per_batch = 256
+	# batch_size_per_step = 32
+	# patience = 50 # Only used if early_stopping = True
+	# batch_pad_value = -500
+
+	# #Improved Version
+	augmentation = True
+	standardize = True
+	weight_decay = 0.1 # This is only used if opt = 'AdamW', 0.1
+	steps_per_batch = 512
+	batch_size_per_step = 512
+	patience = 5 # Only used if early_stopping = True
+	batch_pad_value = -5000
+	levels = [6]
+	opt = ['AdamW']
 
 	# Run Details
 	enable_cuda = True
@@ -96,7 +119,11 @@ def load_config_file():
 #	args = parse_args()
 #	config = load_config(**vars(args))
 	config = Config()	
-	m_dict = {
+	m_dict = {	
+				'run_name': config.run_name,
+				'augmentation': config.augmentation,
+				'standardize': config.standardize,
+				'weight_decay': config.weight_decay,
 				'input_dir': config.input_dir,
 				'output_dir': config.output_dir,
 				'write_output': config.write_output,
